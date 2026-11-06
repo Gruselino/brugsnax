@@ -177,22 +177,29 @@ async function searchOFF(q) {
   const d = await getJSON(`https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=8&fields=${FIELDS}`);
   return (d?.products || []).map(normOFF).filter(p => p.name);
 }
+// "Goldbären" ~ "goldbaren", "M&M's" ~ "m&ms": lowercase, strip accents and apostrophes
+const fold = s => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/ß/g, "ss").replace(/['’`]/g, "");
 async function searchOP(words) {
-  // one request per word for name and brand; then keep products that match every word
-  const reqs = words.flatMap(w => ["product_name__like", "brands__like"].map(f =>
-    getJSON(`https://prices.openfoodfacts.org/api/v1/products?${f}=${encodeURIComponent(w)}&price_count__gte=1&size=40&order_by=-price_count`)));
+  // one request per word (name and brand), plus the whole phrase; the API's "like" is
+  // accent-sensitive, so words are sent both as typed and folded when they differ
+  const terms = [...new Set(words.flatMap(w => [w, fold(w)]))];
+  const reqs = terms.flatMap(w => ["product_name__like", "brands__like"].map(f =>
+    getJSON(`https://prices.openfoodfacts.org/api/v1/products?${f}=${encodeURIComponent(w)}&price_count__gte=1&size=50&order_by=-price_count`)));
   const seen = new Map();
   for (const d of await Promise.all(reqs)) for (const p of d?.items || []) if (p.code && !seen.has(p.code)) seen.set(p.code, normOP(p));
-  const hay = p => (p.name + " " + p.brand).toLowerCase();
-  return [...seen.values()]
-    .map(p => ({ ...p, score: words.filter(w => hay(p).includes(w)).length }))
-    .filter(p => p.score === words.length)
-    .sort((a, b) => b.priceCount - a.priceCount).slice(0, 6);
+  const scored = [...seen.values()].map(p => {
+    const hay = fold(p.name + " " + p.brand);
+    return { ...p, score: words.filter(w => hay.includes(fold(w))).length };
+  }).sort((a, b) => b.score - a.score || b.priceCount - a.priceCount);
+  // prefer products matching every word; if there are none, allow one word to miss
+  const full = scored.filter(p => p.score === words.length);
+  const near = words.length > 1 ? scored.filter(p => p.score >= words.length - 1) : [];
+  return (full.length ? full : near).slice(0, 6);
 }
 async function findCandidates(q) {
-  const words = q.toLowerCase().split(/\s+/).filter(w => w.length > 1).slice(0, 4);
+  const words = q.trim().split(/\s+/).filter(w => w.length > 1).slice(0, 4);
   offBusy = false;
-  const [op, off] = await Promise.all([searchOP(words), searchOFF(q)]);
+  const [op, off] = await Promise.all([searchOP(words.length ? words : [q.trim()]), searchOFF(q)]);
   const merged = new Map();
   for (const p of [...op, ...off]) if (!merged.has(p.code)) merged.set(p.code, p);
   const list = [...merged.values()].slice(0, 10);
