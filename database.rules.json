@@ -1,0 +1,18 @@
+{
+  "rules": {
+    "items": {
+      ".read": true,
+      "$id": {
+        ".write": true,
+        ".validate": "!newData.exists() || (newData.hasChildren(['name','created']) && newData.child('name').isString() && newData.child('name').val().length < 120)"
+      }
+    },
+    "votes": {
+      ".read": true,
+      "$id": {
+        ".write": "!newData.exists()",
+        "$client": { ".write": true, ".validate": "!newData.exists() || newData.val() === true" }
+      }
+    }
+  }
+}
