@@ -8,7 +8,10 @@
   :root { --fg:#222; --muted:#777; --line:#ddd; --accent:#1a73e8; --bg:#fff; }
   @media (prefers-color-scheme: dark) { :root { --fg:#eee; --muted:#999; --line:#444; --accent:#8ab4f8; --bg:#1b1b1b; } }
   body { font: 15px/1.4 system-ui, sans-serif; color:var(--fg); background:var(--bg); max-width:720px; margin:0 auto; padding:16px; }
-  h1 { font-size:1.4em; margin:0 0 12px; }
+  h1 { font-size:1.4em; margin:0 0 4px; }
+  #mouse { display:flex; align-items:center; gap:10px; margin:0 0 12px; }
+  #mouse svg { width:200px; height:auto; }
+  #mouseCap { color:var(--muted); font-size:.9em; }
   input, button { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:4px; background:var(--bg); color:var(--fg); }
   button { cursor:pointer; }
   button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
@@ -20,6 +23,7 @@
   #candidates li { display:flex; align-items:center; gap:10px; padding:6px 10px; border-bottom:1px solid var(--line); cursor:pointer; }
   #candidates li:last-child { border-bottom:0; }
   #candidates li:hover { background:rgba(128,128,128,.12); }
+  #candidates li.cancel { color:var(--muted); }
   #candidates img, #candidates .noimg { width:36px; height:36px; object-fit:contain; flex:none; }
   #candidates .t { flex:1; }
   #candidates .p { white-space:nowrap; font-weight:600; }
@@ -47,6 +51,7 @@
 <body>
 <label id="me">Your name <input id="name" placeholder="optional"></label>
 <h1>🍫 Snack Bar Wishlist</h1>
+<div id="mouse"><div id="mouseSvg"></div><div id="mouseCap"></div></div>
 
 <div id="setup" hidden>
   <b>Not configured yet.</b> Copy your Firebase web config into <code>firebase-config.js</code> (see README.md).
@@ -100,6 +105,125 @@ let items = {}, votes = {};
 onValue(ref(db, "items"), s => { items = s.val() || {}; render(); });
 onValue(ref(db, "votes"), s => { votes = s.val() || {}; render(); });
 
+// ---- fat-o-meter mouse ----
+// Fat-o-meter mouse: stage 1 (fit) … 10 (stuffed). Original drawing, inline SVG, 200x96 viewBox.
+function mouseSVG(stage) {
+  const S = Math.max(1, Math.min(10, stage)), t = (S - 1) / 9;
+  const bw = 22 + 20 * t, bh = 15 + 19 * t;      // body radii (rounder when chubby)
+  const cx = 98, cy = 58;
+  const hr = 11 + 2.5 * t;                       // head radius
+  const hx = cx - bw + 6, hy = cy - 8 - 2 * t;   // head centre
+  const groundY = cy + bh;
+  // --- sweets (each drawn at a ground position; revealed cumulatively) ---
+  const candy = (x, y, c) => `<g transform="translate(${x} ${y})"><path d="M-9 -3 l4 3 -4 3 z M9 -3 l-4 3 4 3 z" fill="${c}"/><ellipse rx="5" ry="3.5" fill="${c}"/><path d="M-2 -3.5 v7 M2 -3.5 v7" stroke="#fff" stroke-width="1" opacity=".7"/></g>`;
+  const lolli = (x, y, c) => `<g transform="translate(${x} ${y})"><line x1="0" y1="0" x2="0" y2="12" stroke="#e8dcc0" stroke-width="2"/><circle r="5.5" fill="${c}"/><path d="M-3 0 a3 3 0 0 1 6 0 a1.5 1.5 0 0 1 -3 0" fill="none" stroke="#fff" stroke-width="1.2" opacity=".8"/></g>`;
+  const bar = (x, y) => `<g transform="translate(${x} ${y}) rotate(-12)"><rect x="-10" y="-4" width="20" height="8" rx="1.5" fill="#6b3e26"/><path d="M-5 -4 v8 M0 -4 v8 M5 -4 v8" stroke="#8a5a3c" stroke-width="1"/><rect x="-10" y="-4" width="7" height="8" rx="1.5" fill="#d8453a"/></g>`;
+  const gummy = (x, y, c) => `<g transform="translate(${x} ${y})"><circle cx="-3" cy="-6" r="2" fill="${c}"/><circle cx="3" cy="-6" r="2" fill="${c}"/><circle cy="-4" r="4" fill="${c}"/><ellipse cy="2" rx="4.5" ry="4" fill="${c}"/><circle cx="-1.5" cy="-4.5" r=".6" fill="#333"/><circle cx="1.5" cy="-4.5" r=".6" fill="#333"/></g>`;
+  const donut = (x, y) => `<g transform="translate(${x} ${y})"><circle r="7" fill="#e9b96e"/><path d="M-6 -1 a6 6 0 0 1 12 0 a6 5 0 0 1 -12 0" fill="#e97aa8"/><circle r="2.2" fill="#fff"/><path d="M-3 -4 l1 1 M2 -5 l1 1 M-1 -2 l1 1" stroke="#fff" stroke-width="1"/></g>`;
+  const cupcake = (x, y) => `<g transform="translate(${x} ${y})"><path d="M-6 0 l1.5 8 h9 l1.5 -8 z" fill="#c98a5a"/><path d="M-7 0 q7 -10 14 0 z" fill="#f4c2d7"/><circle cy="-4" r="1.8" fill="#d8453a"/></g>`;
+  const cookie = (x, y) => `<g transform="translate(${x} ${y})"><circle r="5.5" fill="#d9a066"/><circle cx="-2" cy="-1" r="1" fill="#5a3a22"/><circle cx="2" cy="1.5" r="1" fill="#5a3a22"/><circle cx="1" cy="-2.5" r=".8" fill="#5a3a22"/></g>`;
+  const wrapper = (x, y, c) => `<path transform="translate(${x} ${y})" d="M0 0 q4 -3 8 0 q-4 3 -8 0" fill="${c}" opacity=".8"/>`;
+  const sweets = [
+    candy(cx + bw + 12, groundY - 3, "#d8453a"),                  // 2
+    bar(cx + bw + 14, groundY - 14),                              // 3
+    gummy(cx + bw + 28, groundY - 4, "#4caf50"),                  // 4
+    candy(hx - hr - 14, groundY - 3, "#f2a900"),                  // 5
+    donut(cx + bw + 30, groundY - 20),                            // 6
+    lolli(hx - hr - 24, groundY - 14, "#7b61ff"),                 // 7
+    cupcake(cx + bw + 48, groundY - 10) + cookie(cx + bw + 44, groundY - 24), // 8
+    gummy(hx - hr - 36, groundY - 4, "#ff7043") + candy(cx + bw + 46, groundY - 34, "#2196f3"), // 9
+    wrapper(cx - 10, groundY + 3, "#d8453a") + wrapper(cx + 14, groundY + 4, "#2196f3") + wrapper(hx - 6, groundY + 3, "#f2a900") + cookie(hx - hr - 40, groundY - 5) // 10
+  ].slice(0, S - 1).join("");
+  // --- expression ---
+  const eye = S >= 10 ? `<path d="M${hx - 5} ${hy - 3} q3 2.5 6 0" fill="none" stroke="#222" stroke-width="1.6" stroke-linecap="round"/>`
+    : S >= 7 ? `<path d="M${hx - 4.5} ${hy - 4} a2.5 2.5 0 0 1 5 0" fill="#222"/>`
+    : `<circle cx="${hx - 2}" cy="${hy - 3}" r="2.2" fill="#222"/><circle cx="${hx - 1.3}" cy="${hy - 3.7}" r=".7" fill="#fff"/>`;
+  const blush = S >= 4 ? `<ellipse cx="${hx - hr * 0.6}" cy="${hy + 4}" rx="${3 + t * 3}" ry="${2 + t * 1.5}" fill="#f0a0a8" opacity=".55"/>` : "";
+  const chin = "";
+  const belly = "";
+  const crumbs = "";
+  const sweat = "";
+  const zzz = S >= 10 ? `<text x="${hx + hr + 4}" y="${hy - hr - 4}" font-size="9" font-family="system-ui" fill="#666">z<tspan dy="-5" font-size="7">z</tspan></text>` : "";
+  const held = S >= 3 ? lolli(hx - hr * 0.3, hy + hr + 1, "#e91e63") : "";
+  const paw = S >= 3 ? `<circle cx="${hx - hr * 0.3}" cy="${hy + hr - 1}" r="3" fill="#8e8e8e"/>` : "";
+  const legs = `<ellipse cx="${cx - bw * 0.45}" cy="${groundY - 2}" rx="5" ry="3" fill="#8a8a8a"/><ellipse cx="${cx + bw * 0.45}" cy="${groundY - 2}" rx="5" ry="3" fill="#8a8a8a"/>`;
+  return `<svg viewBox="0 0 200 96" width="200" height="96" aria-label="snack mouse, stage ${S} of 10">
+  <path d="M${cx + bw - 4} ${cy + 4} q 18 ${-14 - 8 * t} 14 ${-28}" fill="none" stroke="#b58a8a" stroke-width="3" stroke-linecap="round"/>
+  <ellipse cx="${cx}" cy="${cy}" rx="${bw}" ry="${bh}" fill="#9a9a9a"/>
+  <ellipse cx="${cx + 2}" cy="${cy + bh * 0.45}" rx="${bw * 0.75}" ry="${bh * 0.5}" fill="#c9c9c9"/>
+  ${belly}${legs}
+  <circle cx="${hx - 4}" cy="${hy - hr + 2}" r="${7 + 1.5 * t}" fill="#9a9a9a"/><circle cx="${hx - 4}" cy="${hy - hr + 2}" r="${4 + t}" fill="#f0b8c0"/>
+  <circle cx="${hx + 7}" cy="${hy - hr + 3}" r="${6 + 1.5 * t}" fill="#8e8e8e"/><circle cx="${hx + 7}" cy="${hy - hr + 3}" r="${3.5 + t}" fill="#e8a8b2"/>
+  ${chin}
+  <circle cx="${hx}" cy="${hy}" r="${hr}" fill="#9a9a9a"/>
+  <ellipse cx="${hx - hr * 0.55}" cy="${hy + 3}" rx="${hr * 0.55 + 2.5 * t}" ry="${hr * 0.45 + 2 * t}" fill="#b0b0b0"/>
+  ${blush}${eye}
+  <circle cx="${hx - hr - 2}" cy="${hy + 3}" r="2.6" fill="#e07a8a"/>
+  <g stroke="#666" stroke-width="1" stroke-linecap="round">
+    <line x1="${hx - hr - 1}" y1="${hy + 2}" x2="${hx - hr - 12}" y2="${hy - 1}"/>
+    <line x1="${hx - hr - 1}" y1="${hy + 4}" x2="${hx - hr - 13}" y2="${hy + 5}"/>
+    <line x1="${hx - hr - 1}" y1="${hy + 6}" x2="${hx - hr - 11}" y2="${hy + 10}"/>
+  </g>
+  ${paw}${held}${crumbs}${sweat}${zzz}${sweets}
+</svg>`;
+}
+
+// Stage 11: King Chonk (80+ sweets). A separate drawing: a big round mouse sitting upright,
+// head on top of the body between the paws, crown on, mouth open under a stream of candy. 200x120 viewBox.
+function megaMouseSVG() {
+  const candy = (x, y, c, r = 0, k = 1) => `<g transform="translate(${x} ${y}) rotate(${r}) scale(${k})"><path d="M-9 -3 l4 3 -4 3 z M9 -3 l-4 3 4 3 z" fill="${c}"/><ellipse rx="5" ry="3.5" fill="${c}"/><path d="M-2 -3.5 v7 M2 -3.5 v7" stroke="#fff" stroke-width="1" opacity=".7"/></g>`;
+  const lolli = (x, y, c, r = 0) => `<g transform="translate(${x} ${y}) rotate(${r})"><line x1="0" y1="0" x2="0" y2="12" stroke="#e8dcc0" stroke-width="2"/><circle r="5.5" fill="${c}"/><path d="M-3 0 a3 3 0 0 1 6 0 a1.5 1.5 0 0 1 -3 0" fill="none" stroke="#fff" stroke-width="1.2" opacity=".8"/></g>`;
+  const bar = (x, y, r = -12) => `<g transform="translate(${x} ${y}) rotate(${r})"><rect x="-10" y="-4" width="20" height="8" rx="1.5" fill="#6b3e26"/><path d="M-5 -4 v8 M0 -4 v8 M5 -4 v8" stroke="#8a5a3c" stroke-width="1"/><rect x="-10" y="-4" width="7" height="8" rx="1.5" fill="#d8453a"/></g>`;
+  const gummy = (x, y, c) => `<g transform="translate(${x} ${y})"><circle cx="-3" cy="-6" r="2" fill="${c}"/><circle cx="3" cy="-6" r="2" fill="${c}"/><circle cy="-4" r="4" fill="${c}"/><ellipse cy="2" rx="4.5" ry="4" fill="${c}"/><circle cx="-1.5" cy="-4.5" r=".6" fill="#333"/><circle cx="1.5" cy="-4.5" r=".6" fill="#333"/></g>`;
+  const donut = (x, y) => `<g transform="translate(${x} ${y})"><circle r="7" fill="#e9b96e"/><path d="M-6 -1 a6 6 0 0 1 12 0 a6 5 0 0 1 -12 0" fill="#e97aa8"/><circle r="2.2" fill="#fff"/></g>`;
+  const cupcake = (x, y) => `<g transform="translate(${x} ${y})"><path d="M-6 0 l1.5 8 h9 l1.5 -8 z" fill="#c98a5a"/><path d="M-7 0 q7 -10 14 0 z" fill="#f4c2d7"/><circle cy="-4" r="1.8" fill="#d8453a"/></g>`;
+  const cookie = (x, y) => `<g transform="translate(${x} ${y})"><circle r="5.5" fill="#d9a066"/><circle cx="-2" cy="-1" r="1" fill="#5a3a22"/><circle cx="2" cy="1.5" r="1" fill="#5a3a22"/></g>`;
+  const star = (x, y, s, c) => `<path transform="translate(${x} ${y}) scale(${s})" d="M0 -5 L1.5 -1.5 5 -1.5 2 1 3 5 0 2.5 -3 5 -2 1 -5 -1.5 -1.5 -1.5z" fill="${c}"/>`;
+  const cx = 100, by = 86, bw = 50, bh = 34;    // round body, sitting
+  const hx = cx, hy = 46, hr = 15;               // head on top, centred
+  // candy stream from the top edge straight into the mouth
+  const stream = [[cx - 3, 3, "#d8453a", 15, .7], [cx + 3, 11, "#2196f3", -25, .65], [cx - 2, 19, "#f2a900", 40, .6], [cx + 2, 26, "#4caf50", -10, .55]]
+    .map(([x, y, c, r, k]) => candy(x, y, c, r, k)).join("");
+  const pile = [candy(10, 112, "#2196f3"), gummy(26, 110, "#4caf50"), bar(46, 110, 8), donut(66, 108), lolli(34, 98, "#2196f3", -10),
+    cupcake(134, 104), candy(154, 112, "#f2a900"), gummy(172, 110, "#ff7043"), cookie(190, 108), bar(188, 94, -8), donut(150, 96)].join("");
+  const side = [lolli(18, 60, "#e91e63", 25), candy(22, 80, "#7b61ff", -20), cookie(184, 66), candy(180, 82, "#d8453a", 15)].join("");
+  return `<svg viewBox="0 0 200 120" width="200" height="120" aria-label="King Chonk, the final mouse">
+  <defs><radialGradient id="glow" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#ffe082" stop-opacity=".55"/><stop offset="1" stop-color="#ffe082" stop-opacity="0"/></radialGradient></defs>
+  <ellipse cx="${cx}" cy="${by - 10}" rx="92" ry="60" fill="url(#glow)"/>
+  <path d="M${cx + bw - 8} ${by + 12} q 26 -4 22 -26 q -2 -8 -10 -8" fill="none" stroke="#b58a8a" stroke-width="3.5" stroke-linecap="round"/>
+  <ellipse cx="${cx}" cy="${by}" rx="${bw}" ry="${bh}" fill="#9a9a9a"/>
+  <ellipse cx="${cx}" cy="${by + 6}" rx="${bw * 0.72}" ry="${bh * 0.7}" fill="#c9c9c9"/>
+  <g fill="#8a8a8a"><ellipse cx="${cx - 34}" cy="${by + 26}" rx="11" ry="5"/><ellipse cx="${cx + 34}" cy="${by + 26}" rx="11" ry="5"/></g>
+  <g fill="#8e8e8e"><ellipse cx="${cx - bw + 6}" cy="${by - 18}" rx="7" ry="11" transform="rotate(20 ${cx - bw + 6} ${by - 18})"/><ellipse cx="${cx + bw - 6}" cy="${by - 18}" rx="7" ry="11" transform="rotate(-20 ${cx + bw - 6} ${by - 18})"/></g>
+  <circle cx="${hx - 12}" cy="${hy - hr + 3}" r="8" fill="#9a9a9a"/><circle cx="${hx - 12}" cy="${hy - hr + 3}" r="4.5" fill="#f0b8c0"/>
+  <circle cx="${hx + 12}" cy="${hy - hr + 3}" r="8" fill="#9a9a9a"/><circle cx="${hx + 12}" cy="${hy - hr + 3}" r="4.5" fill="#f0b8c0"/>
+  <circle cx="${hx}" cy="${hy}" r="${hr}" fill="#9a9a9a"/>
+  <ellipse cx="${hx - 10}" cy="${hy + 2}" rx="5" ry="3" fill="#f0a0a8" opacity=".6"/><ellipse cx="${hx + 10}" cy="${hy + 2}" rx="5" ry="3" fill="#f0a0a8" opacity=".6"/>
+  <path d="M${hx - 10} ${hy - 7} q2.5 -3 5 0" fill="none" stroke="#222" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M${hx + 5} ${hy - 7} q2.5 -3 5 0" fill="none" stroke="#222" stroke-width="1.6" stroke-linecap="round"/>
+  <circle cx="${hx}" cy="${hy - 4}" r="2" fill="#e07a8a"/>
+  <ellipse cx="${hx}" cy="${hy + 5}" rx="6.5" ry="5.5" fill="#5a2a2a"/><ellipse cx="${hx}" cy="${hy + 8}" rx="4" ry="2.2" fill="#e07a8a"/>
+  ${candy(hx, hy + 3, "#d8453a", 10, .45)}
+  <g stroke="#666" stroke-width="1" stroke-linecap="round"><line x1="${hx - 7}" y1="${hy + 6}" x2="${hx - 19}" y2="${hy + 4}"/><line x1="${hx - 7}" y1="${hy + 8}" x2="${hx - 19}" y2="${hy + 10}"/><line x1="${hx + 7}" y1="${hy + 6}" x2="${hx + 19}" y2="${hy + 4}"/><line x1="${hx + 7}" y1="${hy + 8}" x2="${hx + 19}" y2="${hy + 10}"/></g>
+  <g transform="rotate(22 ${hx + 14} ${hy - hr - 2})"><path d="M${hx + 5} ${hy - hr - 1} l2 -9 4.5 5.5 3 -8 3 8 4.5 -5.5 2 9 z" fill="#f2b705" stroke="#d99a00" stroke-width=".8"/>
+  <circle cx="${hx + 7}" cy="${hy - hr - 8}" r="1.2" fill="#d8453a"/><circle cx="${hx + 14.5}" cy="${hy - hr - 11}" r="1.2" fill="#2196f3"/><circle cx="${hx + 22}" cy="${hy - hr - 8}" r="1.2" fill="#4caf50"/></g>
+  ${stream}${side}${pile}
+  ${star(60, 30, 1, "#ffd54f")}${star(142, 26, .9, "#ffd54f")}${star(190, 44, .7, "#ffd54f")}${star(8, 36, .7, "#ffd54f")}
+</svg>`;
+}
+
+const STAGES = [1, 3, 5, 8, 15, 20, 28, 32, 39, 50], CHONK_AT = 80;
+function renderMouse(n) {
+  if (n >= CHONK_AT) {
+    $("#mouseSvg").innerHTML = megaMouseSVG();
+    $("#mouseCap").textContent = `👑 KING CHONK · ${n} different snacks on the list`;
+    return;
+  }
+  const stage = STAGES.filter(t => n >= t).length;
+  $("#mouseSvg").innerHTML = mouseSVG(Math.max(1, stage));
+  $("#mouseCap").textContent = `stage ${stage}/10 · ${n} different snack${n === 1 ? "" : "s"} · next stage at ${STAGES[stage] ?? CHONK_AT}`;
+}
+
 // ---- render ----
 function render() {
   const rows = Object.entries(items).map(([id, it]) => ({ id, ...it, n: Object.keys(votes[id] || {}).length }))
@@ -116,6 +240,7 @@ function render() {
   const sum = rows.reduce((a, r) => a + (r.price || 0) * (r.qty || 1), 0);
   const pieces = rows.reduce((a, r) => a + (r.qty || 1), 0);
   const missing = rows.filter(r => r.price == null).length;
+  renderMouse(rows.length);
   $("#total").textContent = rows.length ? `Total: ${eur(sum)} for ${pieces} piece${pieces > 1 ? "s" : ""} of ${rows.length} snack${rows.length > 1 ? "s" : ""}${missing ? ` (${missing} without price)` : ""}` : "No suggestions yet.";
 }
 
@@ -226,6 +351,8 @@ async function findCandidates(q) {
 }
 
 // ---- suggest flow ----
+const closeResults = () => { $("#candidates").innerHTML = ""; $("#status").textContent = ""; };
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeResults(); });
 $("#suggest").onsubmit = async e => {
   e.preventDefault();
   const q = $("#query").value.trim(); if (!q) return;
@@ -238,9 +365,11 @@ $("#suggest").onsubmit = async e => {
   $("#candidates").innerHTML = found.map((p, i) => `
     <li data-i="${i}">${p.image ? `<img src="${esc(p.image)}" alt="">` : "<span class='noimg'></span>"}
       <span class="t">${esc(p.name)}<div class="brand">${esc([p.brand, p.quantity].filter(Boolean).join(" · "))}</div></span>
-      <span class="p ${p.price == null ? "none" : ""}" title="${esc(p.priceNote || "")}">${p.price == null ? "no price" : (p.priceNote?.includes("≈") ? "≈ " : "") + eur(p.price)}</span></li>`).join("");
+      <span class="p ${p.price == null ? "none" : ""}" title="${esc(p.priceNote || "")}">${p.price == null ? "no price" : (p.priceNote?.includes("≈") ? "≈ " : "") + eur(p.price)}</span></li>`).join("")
+    + (found.length ? `<li class="cancel" data-i="-1"><span class="noimg"></span><span class="t">Cancel – none of these</span></li>` : "");
   $("#candidates").onclick = async ev => {
     const li = ev.target.closest("li"); if (!li) return;
+    if (+li.dataset.i < 0) { closeResults(); return; }
     const p = found[+li.dataset.i];
     $("#candidates").innerHTML = ""; $("#status").textContent = "Adding…";
     await set(push(ref(db, "items")), {
