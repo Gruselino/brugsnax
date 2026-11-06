@@ -20,7 +20,10 @@
   #candidates li { display:flex; align-items:center; gap:10px; padding:6px 10px; border-bottom:1px solid var(--line); cursor:pointer; }
   #candidates li:last-child { border-bottom:0; }
   #candidates li:hover { background:rgba(128,128,128,.12); }
-  #candidates img { width:36px; height:36px; object-fit:contain; }
+  #candidates img, #candidates .noimg { width:36px; height:36px; object-fit:contain; flex:none; }
+  #candidates .t { flex:1; }
+  #candidates .p { white-space:nowrap; font-weight:600; }
+  #candidates .p.none { color:var(--muted); font-weight:normal; font-size:.9em; }
   .brand { color:var(--muted); font-size:.9em; }
   table { width:100%; border-collapse:collapse; }
   td, th { text-align:left; padding:6px 4px; border-bottom:1px solid var(--line); vertical-align:middle; }
@@ -60,7 +63,7 @@
   <tbody id="list"></tbody>
 </table>
 <div id="total"></div>
-<div id="hint">Click a price to correct it. Prices are crowd‑sourced averages from Open Prices (EUR); items without a price count as 0 in the total.</div>
+<div id="hint">Prices are the median of the prices recorded for that product on Open Prices (EUR; ≈ means converted from another currency at today's ECB rate). Pick a candidate that shows a price; products without one are listed too but count as 0 €. Click a price to refresh it.</div>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
@@ -70,6 +73,16 @@ import { firebaseConfig } from "./firebase-config.js";
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const eur = n => n == null ? "—" : n.toFixed(2).replace(".", ",") + " €";
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let offBusy = false;
+const getJSON = async (url, retry = 1) => {
+  try {
+    const r = await fetch(url);
+    if ((r.status === 503 || r.status === 429) && retry) { await sleep(2000); return getJSON(url, retry - 1); }
+    if (!r.ok && url.includes("openfoodfacts.org/cgi")) offBusy = true;
+    return r.ok ? await r.json() : null;
+  } catch { return null; }
+};
 
 // ---- identity (per browser) ----
 const clientId = localStorage.clientId || (localStorage.clientId = Math.random().toString(36).slice(2) + Date.now().toString(36));
@@ -95,7 +108,7 @@ function render() {
       <td>${r.image ? `<img src="${esc(r.image)}" alt="">` : ""}${esc(r.name)}
         <div class="brand">${esc([r.brand, r.quantity].filter(Boolean).join(" · "))}${r.addedBy ? ` · by ${esc(r.addedBy)}` : ""}</div></td>
       <td class="n"><button class="vote ${votes[r.id]?.[clientId] ? "on" : ""}" data-act="vote">👍 ${r.n}</button></td>
-      <td class="n"><span class="price ${r.price == null ? "none" : ""}" data-act="price" title="${r.priceNote ? esc(r.priceNote) : "click to set"}">${eur(r.price)}</span></td>
+      <td class="n"><span class="price ${r.price == null ? "none" : ""}" data-act="price" title="${esc(r.priceNote || "no price found yet")} – click to refresh">${r.priceNote?.includes("≈") ? "≈ " : ""}${eur(r.price)}</span></td>
       <td class="n"><button class="del" data-act="del" title="Remove">×</button></td>
     </tr>`).join("");
   const sum = rows.reduce((a, r) => a + (r.price || 0), 0);
@@ -103,82 +116,113 @@ function render() {
   $("#total").textContent = rows.length ? `Total: ${eur(sum)} for ${rows.length} item${rows.length > 1 ? "s" : ""}${missing ? ` (${missing} without price)` : ""}` : "No suggestions yet.";
 }
 
-$("#list").onclick = e => {
+$("#list").onclick = async e => {
   const act = e.target.dataset.act; if (!act) return;
   const id = e.target.closest("tr").dataset.id;
   if (act === "vote") {
     const r = ref(db, `votes/${id}/${clientId}`);
     votes[id]?.[clientId] ? remove(r) : set(r, true);
   } else if (act === "price") {
-    const v = prompt(`Price in € for "${items[id].name}"`, items[id].price ?? "");
-    if (v === null) return;
-    const p = parseFloat(v.replace(",", "."));
-    update(ref(db, `items/${id}`), { price: isNaN(p) ? null : Math.round(p * 100) / 100, priceNote: isNaN(p) ? null : "set manually" });
+    if (!items[id].code) { $("#status").textContent = "This item has no barcode, so no price can be looked up."; return; }
+    $("#status").textContent = "Refreshing price…";
+    const pr = await medianPrice(items[id].code);
+    await update(ref(db, `items/${id}`), { price: pr?.price ?? null, priceNote: pr?.note ?? null });
+    $("#status").textContent = pr ? `Price updated: ${pr.note}.` : "Still no EUR price recorded for this product.";
   } else if (act === "del") {
     if (confirm(`Remove "${items[id].name}"?`)) update(ref(db), { [`items/${id}`]: null, [`votes/${id}`]: null });
   }
 };
 
-// ---- lookup: Open Food Facts ----
-const FIELDS = "code,product_name,product_name_de,product_name_en,brands,quantity,image_small_url,image_url";
-const pick = v => typeof v === "object" && v ? (v.de || v.en || v.main || Object.values(v)[0]) : v;
-const norm = p => ({
-  code: p.code, name: pick(p.product_name_de) || pick(p.product_name) || pick(p.product_name_en) || "",
-  brand: Array.isArray(p.brands) ? p.brands[0] : (p.brands || "").split(",")[0].trim(),
-  quantity: p.quantity || "", image: p.image_small_url || p.image_url || ""
-});
-async function searchOFF(q) {
-  // Classic search first: it sends CORS headers, so browsers can call it. The newer
-  // search-a-licious endpoint currently doesn't, so it's only a fallback.
-  const tries = [
-    `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=6&fields=${FIELDS}`,
-    `https://search.openfoodfacts.org/search?q=${encodeURIComponent(q)}&langs=de,en&page_size=6&fields=${FIELDS}`
-  ];
-  for (const url of tries) {
-    try {
-      const d = await (await fetch(url)).json();
-      const list = (d.hits || d.products || []).map(norm).filter(p => p.name);
-      if (list.length) return list;
-    } catch {}
+// ---- prices: Open Prices (median, per piece, undiscounted). EUR preferred; otherwise the
+// currency with the most recorded prices, converted at today's ECB rate (shown with ≈) ----
+let ratesP;
+const rates = () => ratesP ||= getJSON("https://api.frankfurter.dev/v1/latest?base=EUR").then(d => d?.rates || {});
+const median = a => a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2;
+async function medianPrice(code) {
+  if (!code) return null;
+  const d = await getJSON(`https://prices.openfoodfacts.org/api/v1/prices?product_code=${encodeURIComponent(code)}&size=100&order_by=-date`);
+  const byCur = {};
+  for (const p of d?.items || []) {
+    if (p.price_per && p.price_per !== "UNIT") continue;
+    const v = +(p.price_is_discounted && p.price_without_discount ? p.price_without_discount : p.price);
+    if (v > 0) (byCur[p.currency] ||= []).push(v);
   }
-  return [];
+  let cur = "EUR", rate = 1;
+  if (!byCur.EUR) {
+    const r = await rates();
+    cur = Object.keys(byCur).filter(c => r[c]).sort((a, b) => byCur[b].length - byCur[a].length)[0];
+    if (!cur) return null;
+    rate = 1 / r[cur];
+  }
+  const ps = byCur[cur].sort((a, b) => a - b), n = ps.length;
+  return { price: Math.round(median(ps) * rate * 100) / 100,
+    note: `median of ${n} price${n > 1 ? "s" : ""} on Open Prices${cur !== "EUR" ? ` (≈ converted from ${cur})` : ""}` };
 }
 
-// ---- lookup: Open Prices (average EUR) ----
-async function avgPrice(code) {
-  if (!code) return null;
-  try {
-    const d = await (await fetch(`https://prices.openfoodfacts.org/api/v1/prices?product_code=${code}&currency=EUR&size=50&order_by=-date`)).json();
-    const ps = (d.items || []).map(p => +p.price).filter(p => p > 0);
-    if (!ps.length) return null;
-    const avg = ps.reduce((a, b) => a + b, 0) / ps.length;
-    return { price: Math.round(avg * 100) / 100, note: `average of ${ps.length} price${ps.length > 1 ? "s" : ""} on Open Prices` };
-  } catch { return null; }
+// ---- search: Open Food Facts (full text) + Open Prices product list (only priced products) ----
+const FIELDS = "code,product_name,product_name_de,product_name_en,brands,quantity,image_small_url,image_url";
+const pick = v => typeof v === "object" && v ? (v.de || v.en || v.main || Object.values(v)[0]) : v;
+const normOFF = p => ({
+  code: p.code, name: pick(p.product_name_de) || pick(p.product_name) || pick(p.product_name_en) || "",
+  brand: (Array.isArray(p.brands) ? p.brands[0] : (p.brands || "").split(",")[0]).trim(),
+  quantity: p.quantity || "", image: p.image_small_url || p.image_url || ""
+});
+const normOP = p => ({
+  code: p.code, name: p.product_name || "", brand: (p.brands || "").split(",")[0].trim(),
+  quantity: p.product_quantity ? `${p.product_quantity} ${p.product_quantity_unit || "g"}` : "", image: p.image_url || "",
+  priceCount: p.price_count || 0
+});
+
+async function searchOFF(q) {
+  const d = await getJSON(`https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q)}&search_simple=1&action=process&json=1&page_size=8&fields=${FIELDS}`);
+  return (d?.products || []).map(normOFF).filter(p => p.name);
+}
+async function searchOP(words) {
+  // one request per word for name and brand; then keep products that match every word
+  const reqs = words.flatMap(w => ["product_name__like", "brands__like"].map(f =>
+    getJSON(`https://prices.openfoodfacts.org/api/v1/products?${f}=${encodeURIComponent(w)}&price_count__gte=1&size=40&order_by=-price_count`)));
+  const seen = new Map();
+  for (const d of await Promise.all(reqs)) for (const p of d?.items || []) if (p.code && !seen.has(p.code)) seen.set(p.code, normOP(p));
+  const hay = p => (p.name + " " + p.brand).toLowerCase();
+  return [...seen.values()]
+    .map(p => ({ ...p, score: words.filter(w => hay(p).includes(w)).length }))
+    .filter(p => p.score === words.length)
+    .sort((a, b) => b.priceCount - a.priceCount).slice(0, 6);
+}
+async function findCandidates(q) {
+  const words = q.toLowerCase().split(/\s+/).filter(w => w.length > 1).slice(0, 4);
+  offBusy = false;
+  const [op, off] = await Promise.all([searchOP(words), searchOFF(q)]);
+  const merged = new Map();
+  for (const p of [...op, ...off]) if (!merged.has(p.code)) merged.set(p.code, p);
+  const list = [...merged.values()].slice(0, 10);
+  await Promise.all(list.map(async p => { const pr = await medianPrice(p.code); p.price = pr?.price ?? null; p.priceNote = pr?.note ?? null; }));
+  return list.sort((a, b) => (b.price != null) - (a.price != null));
 }
 
 // ---- suggest flow ----
 $("#suggest").onsubmit = async e => {
   e.preventDefault();
   const q = $("#query").value.trim(); if (!q) return;
-  $("#find").disabled = true; $("#status").textContent = "Searching…"; $("#candidates").innerHTML = "";
-  const found = await searchOFF(q);
-  $("#find").disabled = false; $("#status").textContent = found.length ? "Pick the one you mean:" : "Nothing matched.";
+  $("#find").disabled = true; $("#status").textContent = "Searching products and prices…"; $("#candidates").innerHTML = "";
+  const found = await findCandidates(q);
+  $("#find").disabled = false;
+  const priced = found.filter(p => p.price != null).length;
+  const busy = offBusy ? " Open Food Facts is busy right now – wait a minute and search again to see more products." : "";
+  $("#status").textContent = (found.length ? `Pick the one you mean (${priced} of ${found.length} have a known price).` : "Nothing matched – try fewer or different words.") + busy;
   $("#candidates").innerHTML = found.map((p, i) => `
-    <li data-i="${i}">${p.image ? `<img src="${esc(p.image)}" alt="">` : "<span style='width:36px'></span>"}
-      <span>${esc(p.name)}<div class="brand">${esc([p.brand, p.quantity].filter(Boolean).join(" · "))}</div></span></li>`).join("")
-    + `<li data-i="-1"><span style="width:36px"></span><span>Add “${esc(q)}” as typed (no price lookup)</span></li>`;
+    <li data-i="${i}">${p.image ? `<img src="${esc(p.image)}" alt="">` : "<span class='noimg'></span>"}
+      <span class="t">${esc(p.name)}<div class="brand">${esc([p.brand, p.quantity].filter(Boolean).join(" · "))}</div></span>
+      <span class="p ${p.price == null ? "none" : ""}" title="${esc(p.priceNote || "")}">${p.price == null ? "no price" : (p.priceNote?.includes("≈") ? "≈ " : "") + eur(p.price)}</span></li>`).join("");
   $("#candidates").onclick = async ev => {
     const li = ev.target.closest("li"); if (!li) return;
-    const i = +li.dataset.i;
-    const p = i >= 0 ? found[i] : { name: q, brand: "", quantity: "", code: "", image: "" };
-    $("#candidates").innerHTML = ""; $("#status").textContent = "Looking up price…";
-    const pr = await avgPrice(p.code);
+    const p = found[+li.dataset.i];
+    $("#candidates").innerHTML = ""; $("#status").textContent = "Adding…";
     await set(push(ref(db, "items")), {
       name: p.name, brand: p.brand, quantity: p.quantity, code: p.code, image: p.image,
-      price: pr?.price ?? null, priceNote: pr?.note ?? null,
-      addedBy: localStorage.name || null, created: Date.now()
+      price: p.price, priceNote: p.priceNote, addedBy: localStorage.name || null, created: Date.now()
     });
-    $("#status").textContent = pr ? "Added with an average price." : "Added — no price found, click “—” to set one.";
+    $("#status").textContent = p.price != null ? `Added (${p.priceNote}).` : "Added – no EUR price recorded for this product yet; it counts as 0 € until one appears.";
     $("#query").value = "";
   };
 };
