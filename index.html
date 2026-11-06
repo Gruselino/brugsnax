@@ -24,6 +24,8 @@
   #candidates li:last-child { border-bottom:0; }
   #candidates li:hover { background:rgba(128,128,128,.12); }
   #candidates li.cancel { color:var(--muted); }
+  #candidates li.dup { opacity:.6; }
+  .tag { font-size:.75em; color:var(--accent); border:1px solid var(--accent); border-radius:3px; padding:0 4px; vertical-align:middle; }
   #candidates img, #candidates .noimg { width:36px; height:36px; object-fit:contain; flex:none; }
   #candidates .t { flex:1; }
   #candidates .p { white-space:nowrap; font-weight:600; }
@@ -352,6 +354,8 @@ async function findCandidates(q) {
 
 // ---- suggest flow ----
 const closeResults = () => { $("#candidates").innerHTML = ""; $("#status").textContent = ""; };
+const sameSnack = (a, b) => (a.code && b.code) ? a.code === b.code : fold(a.name + "|" + a.brand) === fold(b.name + "|" + b.brand);
+const existingId = p => Object.keys(items).find(id => sameSnack(items[id], p));
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeResults(); });
 $("#suggest").onsubmit = async e => {
   e.preventDefault();
@@ -363,14 +367,22 @@ $("#suggest").onsubmit = async e => {
   const busy = offBusy ? " Open Food Facts is busy right now – wait a minute and search again to see more products." : "";
   $("#status").textContent = (found.length ? `Pick the one you mean (${priced} of ${found.length} have a known price).` : "Nothing matched – try fewer or different words.") + busy;
   $("#candidates").innerHTML = found.map((p, i) => `
-    <li data-i="${i}">${p.image ? `<img src="${esc(p.image)}" alt="">` : "<span class='noimg'></span>"}
-      <span class="t">${esc(p.name)}<div class="brand">${esc([p.brand, p.quantity].filter(Boolean).join(" · "))}</div></span>
+    <li data-i="${i}" ${existingId(p) ? 'class="dup"' : ""}>${p.image ? `<img src="${esc(p.image)}" alt="">` : "<span class='noimg'></span>"}
+      <span class="t">${esc(p.name)}${existingId(p) ? ' <span class="tag">already on the list</span>' : ""}<div class="brand">${esc([p.brand, p.quantity].filter(Boolean).join(" · "))}</div></span>
       <span class="p ${p.price == null ? "none" : ""}" title="${esc(p.priceNote || "")}">${p.price == null ? "no price" : (p.priceNote?.includes("≈") ? "≈ " : "") + eur(p.price)}</span></li>`).join("")
     + (found.length ? `<li class="cancel" data-i="-1"><span class="noimg"></span><span class="t">Cancel – none of these</span></li>` : "");
   $("#candidates").onclick = async ev => {
     const li = ev.target.closest("li"); if (!li) return;
     if (+li.dataset.i < 0) { closeResults(); return; }
     const p = found[+li.dataset.i];
+    const dup = existingId(p);
+    if (dup) {
+      $("#candidates").innerHTML = "";
+      await set(ref(db, `votes/${dup}/${clientId}`), true);
+      $("#status").textContent = `"${items[dup].name}" is already on the list – your vote was added to it instead.`;
+      $("#query").value = "";
+      return;
+    }
     $("#candidates").innerHTML = ""; $("#status").textContent = "Adding…";
     await set(push(ref(db, "items")), {
       name: p.name, brand: p.brand, quantity: p.quantity, code: p.code, image: p.image,
