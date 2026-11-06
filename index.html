@@ -31,6 +31,7 @@
   td.n { text-align:right; white-space:nowrap; }
   td img { width:32px; height:32px; object-fit:contain; margin-right:6px; vertical-align:middle; }
   .vote { min-width:64px; }
+  .qty { width:3.2em; padding:4px 2px; text-align:center; }
   .vote.on { background:var(--accent); color:#fff; border-color:var(--accent); }
   .price { cursor:pointer; text-decoration:underline dotted; }
   .price.none { color:var(--muted); }
@@ -59,11 +60,11 @@
 <div id="status"></div>
 
 <table>
-  <thead><tr><th>Snack</th><th class="n">Votes</th><th class="n">Price</th><th></th></tr></thead>
+  <thead><tr><th>Snack</th><th class="n">Votes</th><th class="n">Qty</th><th class="n">Price</th><th></th></tr></thead>
   <tbody id="list"></tbody>
 </table>
 <div id="total"></div>
-<div id="hint">Prices are the median of the prices recorded for that product on Open Prices (EUR; ≈ means converted from another currency at today's ECB rate). Pick a candidate that shows a price; products without one are listed too but count as 0 €. Click a price to refresh it.</div>
+<div id="hint">Prices are the median of the prices recorded for that product on Open Prices (EUR; ≈ means converted from another currency at today's ECB rate). Pick a candidate that shows a price; products without one count as 0 €. Click a price to type your own or to refresh the median. Qty = how many to buy; the total is price × qty.</div>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
@@ -108,14 +109,22 @@ function render() {
       <td>${r.image ? `<img src="${esc(r.image)}" alt="">` : ""}${esc(r.name)}
         <div class="brand">${esc([r.brand, r.quantity].filter(Boolean).join(" · "))}${r.addedBy ? ` · by ${esc(r.addedBy)}` : ""}</div></td>
       <td class="n"><button class="vote ${votes[r.id]?.[clientId] ? "on" : ""}" data-act="vote">👍 ${r.n}</button></td>
-      <td class="n"><span class="price ${r.price == null ? "none" : ""}" data-act="price" title="${esc(r.priceNote || "no price found yet")} – click to refresh">${r.priceNote?.includes("≈") ? "≈ " : ""}${eur(r.price)}</span></td>
+      <td class="n"><input class="qty" type="number" min="1" step="1" value="${r.qty || 1}" data-act="qty" title="How many to buy"></td>
+      <td class="n"><span class="price ${r.price == null ? "none" : ""}" data-act="price" title="${esc(r.priceNote || "no price found yet")} – click to change">${r.priceNote?.includes("≈") ? "≈ " : ""}${eur(r.price)}</span></td>
       <td class="n"><button class="del" data-act="del" title="Remove">×</button></td>
     </tr>`).join("");
-  const sum = rows.reduce((a, r) => a + (r.price || 0), 0);
+  const sum = rows.reduce((a, r) => a + (r.price || 0) * (r.qty || 1), 0);
+  const pieces = rows.reduce((a, r) => a + (r.qty || 1), 0);
   const missing = rows.filter(r => r.price == null).length;
-  $("#total").textContent = rows.length ? `Total: ${eur(sum)} for ${rows.length} item${rows.length > 1 ? "s" : ""}${missing ? ` (${missing} without price)` : ""}` : "No suggestions yet.";
+  $("#total").textContent = rows.length ? `Total: ${eur(sum)} for ${pieces} piece${pieces > 1 ? "s" : ""} of ${rows.length} snack${rows.length > 1 ? "s" : ""}${missing ? ` (${missing} without price)` : ""}` : "No suggestions yet.";
 }
 
+$("#list").onchange = e => {
+  if (e.target.dataset.act !== "qty") return;
+  const id = e.target.closest("tr").dataset.id, q = Math.max(1, Math.floor(+e.target.value || 1));
+  e.target.value = q;
+  update(ref(db, `items/${id}`), { qty: q });
+};
 $("#list").onclick = async e => {
   const act = e.target.dataset.act; if (!act) return;
   const id = e.target.closest("tr").dataset.id;
@@ -123,11 +132,20 @@ $("#list").onclick = async e => {
     const r = ref(db, `votes/${id}/${clientId}`);
     votes[id]?.[clientId] ? remove(r) : set(r, true);
   } else if (act === "price") {
-    if (!items[id].code) { $("#status").textContent = "This item has no barcode, so no price can be looked up."; return; }
-    $("#status").textContent = "Refreshing price…";
-    const pr = await medianPrice(items[id].code);
+    const it = items[id];
+    const v = prompt(`Price per piece in € for "${it.name}"\n(leave empty to look up the median price again)`, it.price ?? "");
+    if (v === null) return;
+    const manual = parseFloat(v.replace(",", "."));
+    if (v.trim() !== "" && !(manual >= 0)) { $("#status").textContent = "That is not a price."; return; }
+    if (v.trim() !== "") {
+      await update(ref(db, `items/${id}`), { price: Math.round(manual * 100) / 100, priceNote: `set manually by ${localStorage.name || "someone"}` });
+      $("#status").textContent = "Price set."; return;
+    }
+    if (!it.code) { $("#status").textContent = "This item has no barcode, so no price can be looked up."; return; }
+    $("#status").textContent = "Looking up price…";
+    const pr = await medianPrice(it.code);
     await update(ref(db, `items/${id}`), { price: pr?.price ?? null, priceNote: pr?.note ?? null });
-    $("#status").textContent = pr ? `Price updated: ${pr.note}.` : "Still no EUR price recorded for this product.";
+    $("#status").textContent = pr ? `Price updated: ${pr.note}.` : "No price recorded for this product.";
   } else if (act === "del") {
     if (confirm(`Remove "${items[id].name}"?`)) update(ref(db), { [`items/${id}`]: null, [`votes/${id}`]: null });
   }
