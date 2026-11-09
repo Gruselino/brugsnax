@@ -43,6 +43,9 @@
   .price.none { color:var(--muted); }
   .del { border:0; background:none; color:var(--muted); font-size:1.1em; padding:2px 6px; }
   #total { margin-top:12px; font-size:1.15em; font-weight:600; }
+  #export { margin:8px 0 12px; }
+  #listBox { margin-top:8px; }
+  #listText { font:13px/1.4 ui-monospace, monospace; white-space:pre-wrap; border:1px solid var(--line); border-radius:4px; padding:8px; margin:0 0 6px; max-height:40vh; overflow:auto; }
   #hint, #status { color:var(--muted); font-size:.9em; }
   #setup { border:1px solid #c33; padding:10px; border-radius:4px; }
   #setup code { background:rgba(128,128,128,.15); padding:1px 4px; }
@@ -71,6 +74,15 @@
   <tbody id="list"></tbody>
 </table>
 <div id="total"></div>
+<div id="export">
+  <button id="listBtn" type="button">📋 Shopping list</button>
+  <div id="listBox" hidden>
+    <pre id="listText"></pre>
+    <button id="copyBtn" type="button">Copy</button>
+    <button id="dlBtn" type="button">Download .txt</button>
+    <button id="csvBtn" type="button">Download .csv</button>
+  </div>
+</div>
 <div id="hint">Prices are the median of the prices recorded for that product on Open Prices (EUR; ≈ means converted from another currency at today's ECB rate). Pick a candidate that shows a price; products without one count as 0 €. Click a price to type your own or to refresh the median. Qty = how many to buy; the total is price × qty.</div>
 
 <script type="module">
@@ -244,8 +256,30 @@ function render() {
   const pieces = rows.reduce((a, r) => a + (r.qty || 1), 0);
   const missing = rows.filter(r => r.price == null).length;
   renderMouse(rows.length);
+  if (!$("#listBox").hidden) $("#listText").textContent = shoppingText();
   $("#total").textContent = rows.length ? `Total: ${eur(sum)} for ${pieces} piece${pieces > 1 ? "s" : ""} of ${rows.length} snack${rows.length > 1 ? "s" : ""}${missing ? ` (${missing} without price)` : ""}` : "No suggestions yet.";
 }
+
+// ---- shopping list export ----
+const listRows = () => Object.entries(items).map(([id, it]) => ({ ...it, n: Object.keys(votes[id] || {}).length, qty: it.qty || 1 }))
+  .sort((a, b) => b.n - a.n || a.created - b.created);
+function shoppingText() {
+  const rows = listRows(), date = new Date().toLocaleDateString("de-DE");
+  const lines = rows.map(r => `${String(r.qty).padStart(2)} × ${[r.name, r.brand, r.quantity].filter(Boolean).join(" · ")}  —  ${eur(r.price)}${r.qty > 1 && r.price != null ? ` (${eur(r.price * r.qty)})` : ""}  · 👍 ${r.n}`);
+  const sum = rows.reduce((a, r) => a + (r.price || 0) * r.qty, 0), missing = rows.filter(r => r.price == null).length;
+  return `Snack bar shopping list – ${date}\n\n${lines.join("\n")}\n\nTotal: ${eur(sum)}${missing ? ` (+ ${missing} item${missing > 1 ? "s" : ""} without price)` : ""}`;
+}
+function shoppingCSV() {
+  const q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  return ["snack;brand;size;qty;unit price EUR;line total EUR;votes;barcode;added by"]
+    .concat(listRows().map(r => [r.name, r.brand, r.quantity, r.qty, r.price ?? "", r.price != null ? Math.round(r.price * r.qty * 100) / 100 : "", r.n, r.code, r.addedBy ?? ""].map(q).join(";")))
+    .join("\n");
+}
+const download = (name, text, type) => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click(); URL.revokeObjectURL(a.href); };
+$("#listBtn").onclick = () => { $("#listBox").hidden = !$("#listBox").hidden; $("#listText").textContent = shoppingText(); };
+$("#copyBtn").onclick = async () => { try { await navigator.clipboard.writeText(shoppingText()); $("#copyBtn").textContent = "Copied ✓"; setTimeout(() => $("#copyBtn").textContent = "Copy", 1500); } catch { $("#status").textContent = "Copy failed – select the text and copy it manually."; } };
+$("#dlBtn").onclick = () => download("snack-list.txt", shoppingText(), "text/plain");
+$("#csvBtn").onclick = () => download("snack-list.csv", "\ufeff" + shoppingCSV(), "text/csv");
 
 $("#list").onchange = e => {
   if (e.target.dataset.act !== "qty") return;
