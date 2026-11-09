@@ -23,7 +23,7 @@
   #candidates li { display:flex; align-items:center; gap:10px; padding:6px 10px; border-bottom:1px solid var(--line); cursor:pointer; }
   #candidates li:last-child { border-bottom:0; }
   #candidates li:hover { background:rgba(128,128,128,.12); }
-  #candidates li.cancel { color:var(--muted); }
+  #candidates li.cancel, #candidates li.manual { color:var(--muted); }
   #candidates li.dup { opacity:.6; }
   .tag { font-size:.75em; color:var(--accent); border:1px solid var(--accent); border-radius:3px; padding:0 4px; vertical-align:middle; }
   #candidates img, #candidates .noimg { width:36px; height:36px; object-fit:contain; flex:none; }
@@ -82,14 +82,15 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const eur = n => n == null ? "—" : n.toFixed(2).replace(".", ",") + " €";
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-let offBusy = false;
+let offBusy = false, apiOk = 0, apiFail = 0;   // per search: how many requests succeeded / failed
 const getJSON = async (url, retry = 1) => {
   try {
-    const r = await fetch(url);
+    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });   // never hang on a dead server
     if ((r.status === 503 || r.status === 429) && retry) { await sleep(2000); return getJSON(url, retry - 1); }
     if (!r.ok && url.includes("openfoodfacts.org/cgi")) offBusy = true;
+    r.ok ? apiOk++ : apiFail++;
     return r.ok ? await r.json() : null;
-  } catch { return null; }
+  } catch { apiFail++; return null; }
 };
 
 // ---- identity (per browser) ----
@@ -343,7 +344,7 @@ async function searchOP(words) {
 }
 async function findCandidates(q) {
   const words = q.trim().split(/\s+/).filter(w => w.length > 1).slice(0, 4);
-  offBusy = false;
+  offBusy = false; apiOk = 0; apiFail = 0;
   const [op, off] = await Promise.all([searchOP(words.length ? words : [q.trim()]), searchOFF(q)]);
   const merged = new Map();
   for (const p of [...op, ...off]) if (!merged.has(p.code)) merged.set(p.code, p);
@@ -364,17 +365,20 @@ $("#suggest").onsubmit = async e => {
   const found = await findCandidates(q);
   $("#find").disabled = false;
   const priced = found.filter(p => p.price != null).length;
-  const busy = offBusy ? " Open Food Facts is busy right now – wait a minute and search again to see more products." : "";
-  $("#status").textContent = (found.length ? `Pick the one you mean (${priced} of ${found.length} have a known price).` : "Nothing matched – try fewer or different words.") + busy;
+  const down = apiOk === 0 && apiFail > 0;
+  const note = down ? " Open Food Facts / Open Prices are not reachable right now (their servers, not this page) – try again later, or add the snack without lookup and set its price by clicking it."
+    : offBusy ? " Open Food Facts is busy right now – wait a minute and search again to see more products." : "";
+  $("#status").textContent = (found.length ? `Pick the one you mean (${priced} of ${found.length} have a known price).` : down ? "Search unavailable." : "Nothing matched – try fewer or different words.") + note;
   $("#candidates").innerHTML = found.map((p, i) => `
     <li data-i="${i}" ${existingId(p) ? 'class="dup"' : ""}>${p.image ? `<img src="${esc(p.image)}" alt="">` : "<span class='noimg'></span>"}
       <span class="t">${esc(p.name)}${existingId(p) ? ' <span class="tag">already on the list</span>' : ""}<div class="brand">${esc([p.brand, p.quantity].filter(Boolean).join(" · "))}</div></span>
       <span class="p ${p.price == null ? "none" : ""}" title="${esc(p.priceNote || "")}">${p.price == null ? "no price" : (p.priceNote?.includes("≈") ? "≈ " : "") + eur(p.price)}</span></li>`).join("")
-    + (found.length ? `<li class="cancel" data-i="-1"><span class="noimg"></span><span class="t">Cancel – none of these</span></li>` : "");
+    + `<li class="manual" data-i="-2"><span class="noimg"></span><span class="t">Add “${esc(q)}” without lookup<div class="brand">no barcode · set the price by clicking it</div></span></li>`
+    + `<li class="cancel" data-i="-1"><span class="noimg"></span><span class="t">Cancel</span></li>`;
   $("#candidates").onclick = async ev => {
     const li = ev.target.closest("li"); if (!li) return;
-    if (+li.dataset.i < 0) { closeResults(); return; }
-    const p = found[+li.dataset.i];
+    if (+li.dataset.i === -1) { closeResults(); return; }
+    const p = +li.dataset.i === -2 ? { name: q, brand: "", quantity: "", code: "", image: "", price: null, priceNote: null } : found[+li.dataset.i];
     const dup = existingId(p);
     if (dup) {
       $("#candidates").innerHTML = "";
@@ -388,7 +392,7 @@ $("#suggest").onsubmit = async e => {
       name: p.name, brand: p.brand, quantity: p.quantity, code: p.code, image: p.image,
       price: p.price, priceNote: p.priceNote, addedBy: localStorage.name || null, created: Date.now()
     });
-    $("#status").textContent = p.price != null ? `Added (${p.priceNote}).` : "Added – no EUR price recorded for this product yet; it counts as 0 € until one appears.";
+    $("#status").textContent = p.price != null ? `Added (${p.priceNote}).` : p.code ? "Added – no price recorded for this product yet; it counts as 0 € until one appears." : "Added without lookup – click its price to set one.";
     $("#query").value = "";
   };
 };
